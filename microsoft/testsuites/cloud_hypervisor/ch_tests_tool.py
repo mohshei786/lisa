@@ -14,7 +14,7 @@ from lisa.features import SerialConsole
 from lisa.messages import SubTestMessage, TestStatus, create_test_result_message
 from lisa.operating_system import CBLMariner
 from lisa.testsuite import TestResult
-from lisa.tools import Dmesg, Docker, Echo, Git, Whoami
+from lisa.tools import Chmod, Dmesg, Docker, Echo, Git, Mkdir, Whoami
 
 
 @dataclass
@@ -25,16 +25,17 @@ class CloudHypervisorTestResult:
 
 
 class CloudHypervisorTests(Tool):
-    CMD_TIME_OUT = 7200
+    CMD_TIME_OUT = 3600 * 24
     # Slightly higher case timeout to give the case a window to
     # - list subtests before running the tests.
     # - extract sub test results from stdout and report them.
     CASE_TIME_OUT = CMD_TIME_OUT + 1200
-    PERF_CMD_TIME_OUT = 900
+    PERF_CMD_TIME_OUT = 2700
 
-    repo = "https://github.com/cloud-hypervisor/cloud-hypervisor.git"
+    # repo = "https://github.com/cloud-hypervisor/cloud-hypervisor.git"
+    repo = "https://microsoft.visualstudio.com/DefaultCollection/LSG/_git/cloud-hypervisor"
 
-    cmd_path: PurePath
+    cmd_path: Any
     repo_root: PurePath
 
     @property
@@ -59,9 +60,32 @@ class CloudHypervisorTests(Tool):
         ref: str = "",
         only: Optional[List[str]] = None,
         skip: Optional[List[str]] = None,
+        GIT_AUTH_TOKEN: Optional[str] = None,
     ) -> None:
+        mkdir = self.node.tools[Mkdir]
+        mkdir.create_directory("/home/cloud/repos/", sudo=True)
+        chmod = self.node.tools[Chmod]
+        chmod.chmod("/home/cloud/repos/", "777", sudo=True)
+
+        tool_path = self.get_tool_path(use_global=True)
+        self.repo_root = tool_path / "cloud-hypervisor"
+        self.cmd_path = self.repo_root / "scripts" / "dev_cli.sh"
+        self._log.debug(f"auth_token: {GIT_AUTH_TOKEN}")
+
+        git = self.node.tools[Git]
+        git.clone(
+            self.repo,
+            self.get_tool_path(use_global=True),
+            auth_token=GIT_AUTH_TOKEN,
+        )
         if ref:
-            self.node.tools[Git].checkout(ref, self.repo_root)
+            git.checkout(ref, self.repo_root)
+
+        git.clone(
+            "https://microsoft.visualstudio.com/DefaultCollection/LSG/_git/igvm-parser",
+            PurePath("/home/cloud/repos/"),
+            auth_token=GIT_AUTH_TOKEN,
+        )
 
         subtests = self._list_subtests(hypervisor, test_type)
 
@@ -76,47 +100,66 @@ class CloudHypervisorTests(Tool):
         else:
             skip_args = ""
         self._log.debug(f"Final Subtests list to run: {subtests}")
+        self._log.debug(f"skip args: {skip_args}")
+        # result = self.run(
+        #     f"tests --hypervisor {hypervisor} --{test_type} -- -- {skip_args}"
+        #     " -Z unstable-options --format json",
+        #     timeout=self.CMD_TIME_OUT,
+        #     force_run=True,
+        #     cwd=self.repo_root,
+        #     no_info_log=False,  # print out result of each test
+        #     shell=True,
+        # )
 
-        result = self.run(
-            f"tests --hypervisor {hypervisor} --{test_type} -- -- {skip_args}"
-            " -Z unstable-options --format json",
-            timeout=self.CMD_TIME_OUT,
-            force_run=True,
-            cwd=self.repo_root,
-            no_info_log=False,  # print out result of each test
-            shell=True,
-        )
+        # # Report subtest results and collect logs before doing any
+        # # assertions.
+        # results = self._extract_test_results(result.stdout, log_path, subtests)
+        # failures = [r.name for r in results if r.status == TestStatus.FAILED]
 
-        # Report subtest results and collect logs before doing any
-        # assertions.
-        results = self._extract_test_results(result.stdout, log_path, subtests)
-        failures = [r.name for r in results if r.status == TestStatus.FAILED]
-
-        for r in results:
-            self._send_subtest_msg(
-                test_result,
-                environment,
-                r.name,
-                r.status,
-                r.message,
+        # for r in results:
+        #     self._send_subtest_msg(
+        #         test_result,
+        #         environment,
+        #         r.name,
+        #         r.status,
+        #         r.message,
+        #     )
+        failures: List[str] = []
+        for test in subtests:
+            arg = f"tests --hypervisor {hypervisor} --{test_type} -- -- --exact {test}"
+            self._log.debug(f"Running: {self.cmd_path} {arg}")
+            result = self.run(
+                arg,
+                timeout=1200,
+                force_run=True,
+                cwd=self.repo_root,
+                no_info_log=False,  # print out result of each test
+                shell=True,
             )
+            if result.exit_code != 0:
+                failures.append(test)
 
         self._save_kernel_logs(log_path)
 
+        # has_failures = len(failures) > 0
+        # if result.is_timeout and has_failures:
+        #     fail(
+        #         f"Timed out after {result.elapsed:.2f}s "
+        #         f"with unexpected failures: {failures}"
+        #     )
+        # elif result.is_timeout:
+        #     fail(f"Timed out after {result.elapsed:.2f}s")
+        # elif has_failures:
+        #     fail(f"Unexpected failures: {failures}")
+        # else:
+        #     # The command could have failed before starting test case execution.
+        #     # So, check the exit code too.
+        #     result.assert_exit_code()
         has_failures = len(failures) > 0
-        if result.is_timeout and has_failures:
+        if has_failures:
             fail(
-                f"Timed out after {result.elapsed:.2f}s "
-                f"with unexpected failures: {failures}"
+                f"Testcases failed: {failures}"
             )
-        elif result.is_timeout:
-            fail(f"Timed out after {result.elapsed:.2f}s")
-        elif has_failures:
-            fail(f"Unexpected failures: {failures}")
-        else:
-            # The command could have failed before starting test case execution.
-            # So, check the exit code too.
-            result.assert_exit_code()
 
     def run_metrics_tests(
         self,
@@ -128,9 +171,32 @@ class CloudHypervisorTests(Tool):
         only: Optional[List[str]] = None,
         skip: Optional[List[str]] = None,
         subtest_timeout: Optional[int] = None,
+        GIT_AUTH_TOKEN: Optional[str] = None,
     ) -> None:
+        mkdir = self.node.tools[Mkdir]
+        mkdir.create_directory("/home/cloud/repos/", sudo=True)
+        chmod = self.node.tools[Chmod]
+        chmod.chmod("/home/cloud/repos/", "777", sudo=True)
+
+        tool_path = self.get_tool_path(use_global=True)
+        self.repo_root = tool_path / "cloud-hypervisor"
+        self.cmd_path = self.repo_root / "scripts" / "dev_cli.sh"
+        self._log.debug(f"auth_token: {GIT_AUTH_TOKEN}")
+
+        git = self.node.tools[Git]
+        git.clone(
+            self.repo,
+            self.get_tool_path(use_global=True),
+            auth_token=GIT_AUTH_TOKEN,
+        )
         if ref:
-            self.node.tools[Git].checkout(ref, self.repo_root)
+            git.checkout(ref, self.repo_root)
+
+        git.clone(
+            "https://microsoft.visualstudio.com/DefaultCollection/LSG/_git/igvm-parser",
+            PurePath("/home/cloud/repos/"),
+            auth_token=GIT_AUTH_TOKEN,
+        )
 
         subtests = self._list_perf_metrics_tests(hypervisor=hypervisor)
         failed_testcases = []
@@ -207,8 +273,6 @@ class CloudHypervisorTests(Tool):
         self.cmd_path = self.repo_root / "scripts" / "dev_cli.sh"
 
     def _install(self) -> bool:
-        git = self.node.tools[Git]
-        git.clone(self.repo, self.get_tool_path(use_global=True))
         if isinstance(self.node.os, CBLMariner):
             daemon_json_file = PurePath("/etc/docker/daemon.json")
             daemon_json = '{"default-ulimits":{"nofile":{"Hard":65535,"Name":"nofile","Soft":65535}}}'  # noqa: E501
@@ -225,7 +289,7 @@ class CloudHypervisorTests(Tool):
             self.node.reboot(time_out=900)
 
         self.node.tools[Docker].start()
-
+        self.cmd_path = "cloud-hypervisor"
         return self._check_exists()
 
     def _list_subtests(self, hypervisor: str, test_type: str) -> Set[str]:

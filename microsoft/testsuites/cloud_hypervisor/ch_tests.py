@@ -67,6 +67,8 @@ class CloudHypervisorTestSuite(TestSuite):
     ) -> None:
         hypervisor = self._get_hypervisor_param(node)
         ref = variables.get("cloudhypervisor_ref", "")
+        git_token = variables.get("git_auth_token", "")
+        log.debug(f"git_token: {git_token}")
         # below variable expects a comma separated list of full testnames
         include_list, exclude_list = get_test_list(
             variables, "ch_integration_tests_included", "ch_integration_tests_excluded"
@@ -80,6 +82,7 @@ class CloudHypervisorTestSuite(TestSuite):
             ref,
             include_list,
             exclude_list,
+            git_token,
         )
 
     @TestCaseMetadata(
@@ -106,6 +109,8 @@ class CloudHypervisorTestSuite(TestSuite):
     ) -> None:
         hypervisor = self._get_hypervisor_param(node)
         ref = variables.get("cloudhypervisor_ref", "")
+        git_token = variables.get("git_auth_token", "")
+        log.debug(f"git_token: {git_token}")
         # below variable expects a comma separated list of full testnames
         include_list, exclude_list = get_test_list(
             variables,
@@ -121,6 +126,7 @@ class CloudHypervisorTestSuite(TestSuite):
             ref,
             include_list,
             exclude_list,
+            git_token,
         )
 
     @TestCaseMetadata(
@@ -141,6 +147,10 @@ class CloudHypervisorTestSuite(TestSuite):
     ) -> None:
         hypervisor = self._get_hypervisor_param(node)
         ref = variables.get("cloudhypervisor_ref", "")
+
+        git_token = variables.get("git_auth_token", "")
+        log.debug(f"git_token: {git_token}")
+
         # below variable expects a comma separated list of full testnames
         include_list, exclude_list = get_test_list(
             variables,
@@ -157,6 +167,7 @@ class CloudHypervisorTestSuite(TestSuite):
             include_list,
             exclude_list,
             subtest_timeout,
+            git_token,
         )
 
     def _ensure_virtualization_enabled(self, node: Node) -> None:

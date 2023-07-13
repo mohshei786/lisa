@@ -115,7 +115,8 @@ class CloudHypervisorPlatform(BaseLibvirtPlatform):
         os_type.text = "hvm"
 
         os_kernel = ET.SubElement(os, "kernel")
-        os_kernel.text = node_context.firmware_path
+        # os_kernel.text = node_context.firmware_path
+        os_kernel.text = f"/usr/share/cloud-hypervisor/cvm/linux{vcpu_count}-ttyS0.bin"
 
         devices = ET.SubElement(domain, "devices")
 
@@ -137,7 +138,8 @@ class CloudHypervisorPlatform(BaseLibvirtPlatform):
 
         network_driver = ET.SubElement(network_interface, "driver")
         network_driver.attrib["queues"] = str(vcpu_count)
-        network_driver.attrib["iommu"] = "on"
+        # network_driver.attrib["iommu"] = "on"
+        network_driver.attrib["iommu"] = "off"
 
         self._add_virtio_disk_xml(
             node_context,
@@ -154,6 +156,7 @@ class CloudHypervisorPlatform(BaseLibvirtPlatform):
         )
 
         xml = ET.tostring(domain, "unicode")
+        self._log.debug(f"libvirt xml: {xml}")
         return xml
 
     def _get_domain_undefine_flags(self) -> int:

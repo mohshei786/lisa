@@ -11,7 +11,7 @@ from dataclasses_json import dataclass_json
 from lisa import schema
 from lisa.node import Node, quick_connect
 from lisa.operating_system import CBLMariner, Linux, Ubuntu
-from lisa.tools import Git, Sed, Service, Usermod, Wget, Whoami
+from lisa.tools import Chmod, Git, Mkdir, Sed, Service, Usermod, Wget, Whoami
 from lisa.transformer import Transformer
 from lisa.util import (
     UnsupportedDistroException,
@@ -35,6 +35,7 @@ class SourceInstallerSchema(BaseInstallerSchema):
     # source code repo
     repo: str = ""
     ref: str = ""
+    auth_token: str = ""
 
 
 @dataclass_json
@@ -447,6 +448,94 @@ class CloudHypervisorSourceInstaller(CloudHypervisorInstaller):
         return self._get_version()
 
 
+class CloudHypervisorInternalRepoInstaller(CloudHypervisorInstaller):
+    _distro_package_mapping = {
+        Ubuntu.__name__: ["gcc"],
+        CBLMariner.__name__: ["gcc", "binutils", "glibc-devel"],
+    }
+
+    @classmethod
+    def type_name(cls) -> str:
+        return "internal_repo"
+
+    @classmethod
+    def type_schema(cls) -> Type[schema.TypedSchema]:
+        return SourceInstallerSchema
+
+    def _build_and_install(self, code_path: PurePath) -> None:
+        self._node.execute(
+            "cargo build --release --feature=igvm,snp,mshv",
+            shell=True,
+            sudo=False,
+            cwd=code_path,
+            expected_exit_code=0,
+            expected_exit_code_failure_message="Failed to build cloud-hypervisor",
+        )
+        self._node.execute(
+            "cp ./target/release/cloud-hypervisor /usr/local/bin",
+            shell=True,
+            sudo=True,
+            cwd=code_path,
+        )
+        self._node.execute(
+            "chmod a+rx /usr/local/bin/cloud-hypervisor",
+            shell=True,
+            sudo=True,
+        )
+        self._node.execute(
+            "setcap cap_net_admin+ep /usr/local/bin/cloud-hypervisor",
+            shell=True,
+            sudo=True,
+        )
+
+    def _install_dependencies(self) -> None:
+        linux: Linux = cast(Linux, self._node.os)
+        packages_list = self._distro_package_mapping[type(linux).__name__]
+        linux.install_packages(packages_list)
+        self._node.execute(
+            "curl https://sh.rustup.rs -sSf | sh -s -- -y",
+            shell=True,
+            sudo=False,
+            expected_exit_code=0,
+            expected_exit_code_failure_message="Failed to install Rust & Cargo",
+        )
+        self._node.execute("source ~/.cargo/env", shell=True, sudo=False)
+        if isinstance(self._node.os, Ubuntu):
+            output = self._node.execute("echo $HOME", shell=True)
+            path = self._node.get_pure_path(output.stdout)
+            self._node.execute(
+                "cp .cargo/bin/* /usr/local/bin/",
+                shell=True,
+                sudo=True,
+                cwd=path,
+            )
+        self._node.execute("cargo --version", shell=True)
+
+    def install(self) -> str:
+        runbook: SourceInstallerSchema = self.runbook
+        self._log.info("Installing dependencies for Cloudhypervisor...")
+        self._install_dependencies()
+        self._log.info("Cloning source code of Internal Repo Cloudhypervisor ...")
+        code_path = _get_source_code(runbook, self._node, self.type_name(), self._log)
+
+        mkdir = self._node.tools[Mkdir]
+        mkdir.create_directory("/home/cloud/repos/", sudo=True)
+        chmod = self._node.tools[Chmod]
+        chmod.chmod("/home/cloud/repos/", "777", sudo=True)
+
+        self._log.info("Cloning source code of IGVM parser ...")
+        git = self._node.tools[Git]
+        git.clone(
+            "https://microsoft.visualstudio.com/DefaultCollection/LSG/_git/igvm-parser",
+            PurePath("/home/cloud/repos/"),
+            auth_token=runbook.auth_token,
+        )
+
+        self._log.info("Building source code of Cloudhypervisor...")
+        self._build_and_install(code_path)
+        return self._get_version()
+
+
 class CloudHypervisorBinaryInstaller(CloudHypervisorInstaller):
     _distro_package_mapping = {
         Ubuntu.__name__: ["jq"],
@@ -501,7 +590,12 @@ def _get_source_code(
     code_path = node.working_path
     log.debug(f"cloning code from {runbook.repo} to {code_path}...")
     git = node.tools[Git]
-    code_path = git.clone(url=runbook.repo, cwd=code_path, ref=runbook.ref)
+    code_path = git.clone(
+        url=runbook.repo,
+        cwd=code_path,
+        ref=runbook.ref,
+        auth_token=runbook.auth_token,
+    )
     return code_path
 
 
