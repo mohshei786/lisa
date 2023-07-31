@@ -71,7 +71,20 @@ class TvmTest(TestSuite):
     def verify_measuredboot_compatibility(self, node: Node) -> None:
         self._is_supported(node)
         posix_os: Posix = cast(Posix, node.os)
-        if isinstance(posix_os, Debian):
+        if isinstance(posix_os, Ubuntu):
+            # focal and jammy don't have azure-compatscanner package in azurecore repo
+            # use bionic for temp solution
+            arch = posix_os.get_kernel_information().hardware_platform
+            arch_name = "arm64" if arch == "aarch64" else "amd64"
+            repo_url = "http://packages.microsoft.com/repos/azurecore/"
+            posix_os.add_repository(
+                repo=(f"deb [arch={arch_name}] {repo_url} bionic main"),
+                keys_location=[
+                    "https://packages.microsoft.com/keys/microsoft.asc",
+                    "https://packages.microsoft.com/keys/msopentech.asc",
+                ],
+            )
+        elif isinstance(posix_os, Debian):
             # azurecore-debian doesn't have azure-compatscanner package
             # use azurecore instead
             posix_os.add_azure_core_repo(AzureCoreRepo.AzureCore)
