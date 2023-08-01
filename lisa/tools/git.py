@@ -103,6 +103,23 @@ class Git(Tool):
             self.checkout(ref, cwd=full_path)
         return full_path
 
+    COMMIT = "commit"
+    BRANCH = "branch"
+    TAG = "tag"
+
+    def _get_ref_type(self, ref: str) -> str:
+        result = self.run(f"show-ref --tags {ref}")
+        if result.exit_code == 0 and result.stdout.strip() != "":
+            return self.TAG
+        result = self.run(f"show-ref --heads {ref}")
+        if result.exit_code == 0 and result.stdout.strip() != "":
+            return self.BRANCH
+        result = self.run(f"branch --all --contains {ref}")
+        if result.exit_code == 0 and result.stdout.strip() != "":
+            return self.TAG
+        else:
+            raise LisaException("Unknown branch/tag/reference passed to Git tool.")
+
     def checkout(
         self, ref: str, cwd: pathlib.PurePath, checkout_branch: str = ""
     ) -> None:
